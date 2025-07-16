@@ -1,91 +1,59 @@
-import { useState } from 'react';
+
+import React, { useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useSocket } from './socket/socket';
+import LoginForm from './components/Auth/LoginForm';
+import ChatPage from './pages/ChatPage';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+// Lazy load or import these pages as you create them
+import HomePage from './pages/HomePage';
+import ProfilePage from './pages/ProfilePage';
+import SettingsPage from './pages/SettingsPage';
+import AboutPage from './pages/AboutPage';
+import NotFoundPage from './pages/NotFoundPage';
+
 
 function App() {
   const [username, setUsername] = useState('');
   const [joined, setJoined] = useState(false);
   const socket = useSocket();
 
-  const handleJoin = () => {
-    if (username.trim()) {
-      socket.connect(username);
-      setJoined(true);
-    }
+  const handleLogin = (usernameInput) => {
+    setUsername(usernameInput);
+    socket.connect(usernameInput);
+    setJoined(true);
+  };
+
+  const handleDisconnect = () => {
+    socket.disconnect();
+    setJoined(false);
+    setUsername('');
   };
 
   return (
-    <div>
-      {!joined ? (
-        <div>
-          <input
-            placeholder="Enter username"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-          />
-          <button onClick={handleJoin}>Join Chat</button>
-        </div>
-      ) : (
-        <Chat socket={socket} username={username} />
-      )}
-    </div>
-  );
-}
-
-function Chat({ socket, username }) {
-  const [input, setInput] = useState('');
-  const { messages, users, typingUsers, sendMessage, setTyping } = socket;
-
-  const handleSend = () => {
-    if (input.trim()) {
-      sendMessage(input);
-      setInput('');
-      setTyping(false);
-    }
-  };
-
-  const handleInput = (e) => {
-    setInput(e.target.value);
-    setTyping(e.target.value.length > 0);
-  };
-
-  return (
-    <div>
-      <div>
-        <b>Online Users:</b> {users.map(u => u.username).join(', ')}
+    // <div className="App">
+    //   {!joined ? (
+    //     <LoginForm onLogin={handleLogin} />
+    //   ) : (
+    //     <ChatPage username={username} onDisconnect={handleDisconnect} />
+    //   )}
+    //   <ToastContainer position="top-right" />
+    // </div>
+        <Router>
+      <div className="App">
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/login" element={<LoginForm onLogin={handleLogin} />} />
+          <Route path="/chat" element={joined ? <ChatPage username={username} onDisconnect={handleDisconnect} /> : <Navigate to="/login" />} />
+          <Route path="/profile" element={joined ? <ProfilePage username={username} /> : <Navigate to="/login" />} />
+          <Route path="/settings" element={joined ? <SettingsPage /> : <Navigate to="/login" />} />
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+        <ToastContainer position="top-right" />
       </div>
-      <div style={{ minHeight: 200, border: '1px solid #ccc', margin: '1em 0', padding: '1em' }}>
-        {messages.map(msg =>
-          msg.system ? (
-            <div key={msg.id} style={{ color: '#888', fontStyle: 'italic' }}>
-              {msg.message}
-            </div>
-          ) : (
-            <div key={msg.id}>
-              <b>{msg.sender || 'Anonymous'}</b>: {msg.message || msg.text}{' '}
-              <i style={{ fontSize: '0.8em' }}>
-                {msg.timestamp && new Date(msg.timestamp).toLocaleTimeString()}
-              </i>
-            </div>
-          )
-        )}
-      </div>
-      <div>
-        {typingUsers.length > 0 && (
-          <i>
-            {typingUsers.join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
-          </i>
-        )}
-      </div>
-      <input
-        value={input}
-        onChange={handleInput}
-        onBlur={() => setTyping(false)}
-        onKeyDown={e => e.key === 'Enter' && handleSend()}
-        placeholder="Type a message"
-        style={{ width: '70%' }}
-      />
-      <button onClick={handleSend}>Send</button>
-    </div>
+    </Router>
   );
 }
 
