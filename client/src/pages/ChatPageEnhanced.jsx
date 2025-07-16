@@ -10,6 +10,8 @@ import NotificationManager from '../components/Notifications/NotificationManager
 import ProfileEdit from '../components/Auth/ProfileEdit';
 import MessagePaginationService from '../services/MessagePaginationService';
 import MessageSearch from '../components/Chat/MessageSearch';
+import ConnectionStatus from '../components/Layout/ConnectionStatus';
+import useReconnection from '../hooks/useReconnection';
 
 const ChatPage = ({ user, onLogout }) => {
   const { logout } = useAuth();
@@ -25,6 +27,7 @@ const ChatPage = ({ user, onLogout }) => {
   const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearchActive, setIsSearchActive] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const messagesEndRef = useRef(null);
 
   const {
@@ -34,13 +37,17 @@ const ChatPage = ({ user, onLogout }) => {
     sendMessage,
     setTyping,
     sendPrivateMessage,
-    isConnected,
-    socket,
-    reactToMessage,
-    editMessage,
-    deleteMessage,
-    replyToMessage
+    socket
   } = useSocket(user);
+
+  const {
+    isConnected,
+    connectionStatus,
+    reconnectAttempts,
+    maxReconnectAttempts,
+    isReconnecting,
+    manualReconnect
+  } = useReconnection(socket, user);
 
   // Load notification preferences
   useEffect(() => {
@@ -64,10 +71,12 @@ const ChatPage = ({ user, onLogout }) => {
     localStorage.setItem('notificationsEnabled', JSON.stringify(notificationsEnabled));
   }, [notificationsEnabled]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom for new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!isSearchActive) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isSearchActive]);
 
   // Handle logout
   const handleLogout = async () => {
@@ -87,11 +96,20 @@ const ChatPage = ({ user, onLogout }) => {
     }
   };
 
+  // Handle message reactions
+  const handleMessageReact = (messageId, reaction) => {
+    if (socket && isConnected) {
+      socket.emit('add_reaction', { messageId, reaction });
+    }
+  };
+
   // Handle room selection
   const handleRoomSelect = (room) => {
     setCurrentRoom(room);
     setSelectedUser(null);
     setChatMode('room');
+    setIsSearchActive(false);
+    setSearchResults([]);
   };
 
   // Handle private chat
@@ -99,6 +117,8 @@ const ChatPage = ({ user, onLogout }) => {
     if (user.username !== user.username) {
       setSelectedUser(user);
       setChatMode('private');
+      setIsSearchActive(false);
+      setSearchResults([]);
     }
   };
 
@@ -123,9 +143,6 @@ const ChatPage = ({ user, onLogout }) => {
       );
       
       setHasMoreMessages(result.hasMore);
-      
-      // You would typically update the messages state here
-      // This depends on how your socket context is structured
       
     } catch (error) {
       console.error('Error loading more messages:', error);
@@ -162,63 +179,9 @@ const ChatPage = ({ user, onLogout }) => {
   // Get messages to display (search results or regular messages)
   const displayMessages = isSearchActive ? searchResults : filteredMessages;
 
-  // Message reaction, edit, delete, and reply handlers
-  const handleMessageReact = (messageId, emoji) => {
-    reactToMessage(messageId, emoji);
-  };
-
-  const handleMessageEdit = (messageId, newContent) => {
-    editMessage(messageId, newContent);
-  };
-
-  const handleMessageDelete = (messageId) => {
-    deleteMessage(messageId);
-  };
-
-  const handleMessageReply = (messageId, replyContent) => {
-    replyToMessage(messageId, replyContent);
-  };
-
-  // Message reaction, edit, delete, and reply handlers
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleMessageReaction = (data) => {
-      console.log('Message reaction received:', data);
-      // The socket context should handle updating the messages
-      // If needed, you can emit a refresh event or handle this in the socket context
-    };
-
-    const handleMessageEdited = (data) => {
-      console.log('Message edited:', data);
-      // The socket context should handle updating the messages
-    };
-
-    const handleMessageDeleted = (data) => {
-      console.log('Message deleted:', data);
-      // The socket context should handle updating the messages
-    };
-
-    const handleMessageReply = (data) => {
-      console.log('Message reply:', data);
-      // The socket context should handle updating the messages
-    };
-
-    socket.on('message_reaction', handleMessageReaction);
-    socket.on('message_edited', handleMessageEdited);
-    socket.on('message_deleted', handleMessageDeleted);
-    socket.on('message_reply', handleMessageReply);
-
-    return () => {
-      socket.off('message_reaction', handleMessageReaction);
-      socket.off('message_edited', handleMessageEdited);
-      socket.off('message_deleted', handleMessageDeleted);
-      socket.off('message_reply', handleMessageReply);
-    };
-  }, [socket]);
-
   return (
-    <div className="h-screen flex flex-col bg-gray-100">
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-blue-50">
+      {/* Enhanced Header */}
       <Header 
         user={user}
         onlineUsers={users} 
@@ -230,37 +193,88 @@ const ChatPage = ({ user, onLogout }) => {
         onToggleSound={handleToggleSound}
         onToggleNotifications={handleToggleNotifications}
         onEditProfile={() => setShowProfileEdit(true)}
+        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       
+      {/* Connection Status Banner */}
+      {!isConnected && (
+        <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-2 shadow-lg">
+          <div className="flex items-center justify-between max-w-7xl mx-auto">
+            <ConnectionStatus
+              isConnected={isConnected}
+              connectionStatus={connectionStatus}
+              reconnectAttempts={reconnectAttempts}
+              maxReconnectAttempts={maxReconnectAttempts}
+              isReconnecting={isReconnecting}
+              onManualReconnect={manualReconnect}
+            />
+            <div className="text-sm opacity-90">
+              Check your internet connection
+            </div>
+          </div>
+        </div>
+      )}
+      
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          onlineUsers={users}
-          currentUser={user.username}
-          onUserSelect={handleUserSelect}
-          selectedUser={selectedUser}
-          currentRoom={currentRoom}
-          onRoomSelect={handleRoomSelect}
-          chatMode={chatMode}
-          unreadMessages={unreadMessages}
-        />
+        {/* Enhanced Sidebar */}
+        <div className={`${sidebarCollapsed ? 'w-16' : 'w-80'} transition-all duration-300 ease-in-out bg-white shadow-xl border-r border-gray-200`}>
+          <Sidebar
+            onlineUsers={users}
+            currentUser={user.username}
+            onUserSelect={handleUserSelect}
+            selectedUser={selectedUser}
+            currentRoom={currentRoom}
+            onRoomSelect={handleRoomSelect}
+            chatMode={chatMode}
+            unreadMessages={unreadMessages}
+            collapsed={sidebarCollapsed}
+          />
+        </div>
         
-        <div className="flex-1 flex flex-col bg-white">
-          <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold text-gray-800">
-                {chatMode === 'private' && selectedUser
-                  ? `Private chat with ${selectedUser.username}`
-                  : `# ${currentRoom.name}`
-                }
-              </h2>
-              {!isConnected && (
-                <span className="text-red-500 text-sm">
-                  Disconnected - Reconnecting...
-                </span>
-              )}
+        {/* Enhanced Main Chat Area */}
+        <div className="flex-1 flex flex-col bg-white shadow-2xl rounded-l-xl overflow-hidden">
+          {/* Chat Header */}
+          <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-4 shadow-lg">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                  {chatMode === 'private' ? (
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3z" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold">
+                    {chatMode === 'private' && selectedUser
+                      ? `${selectedUser.username}`
+                      : `# ${currentRoom.name}`
+                    }
+                  </h2>
+                  <p className="text-blue-100 text-sm">
+                    {chatMode === 'private' && selectedUser
+                      ? 'Private conversation'
+                      : `${users.length} members online`
+                    }
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex items-center space-x-2">
+                {isConnected && (
+                  <div className="flex items-center space-x-1 text-green-300">
+                    <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                    <span className="text-xs">Connected</span>
+                  </div>
+                )}
+              </div>
             </div>
             
-            {/* Search Component */}
+            {/* Enhanced Search Component */}
             <div className="w-full max-w-md">
               <MessageSearch
                 messages={filteredMessages}
@@ -271,7 +285,8 @@ const ChatPage = ({ user, onLogout }) => {
             </div>
           </div>
           
-          <div className="flex-1 overflow-hidden">
+          {/* Messages Area */}
+          <div className="flex-1 overflow-hidden bg-gray-50">
             <MessageList
               messages={displayMessages}
               currentUser={user.username}
@@ -283,6 +298,7 @@ const ChatPage = ({ user, onLogout }) => {
             <div ref={messagesEndRef} />
           </div>
           
+          {/* Typing Indicator */}
           <TypingIndicator 
             typingUsers={typingUsers}
             chatMode={chatMode}
@@ -290,18 +306,23 @@ const ChatPage = ({ user, onLogout }) => {
             selectedUser={selectedUser}
           />
           
-          <MessageInput
-            onSendMessage={handleSendMessage}
-            onTyping={setTyping}
-            placeholder={
-              chatMode === 'private' && selectedUser
-                ? `Message ${selectedUser.username}`
-                : `Message #${currentRoom.name}`
-            }
-          />
+          {/* Enhanced Message Input */}
+          <div className="bg-white border-t border-gray-200 shadow-lg">
+            <MessageInput
+              onSendMessage={handleSendMessage}
+              onTyping={setTyping}
+              disabled={!isConnected}
+              placeholder={
+                isConnected 
+                  ? `Message ${chatMode === 'private' ? selectedUser?.username : `#${currentRoom.name}`}`
+                  : 'Connecting...'
+              }
+            />
+          </div>
         </div>
       </div>
       
+      {/* Notification Manager */}
       <NotificationManager
         newMessage={messages[messages.length - 1]}
         currentUser={user.username}
@@ -313,9 +334,17 @@ const ChatPage = ({ user, onLogout }) => {
         selectedUser={selectedUser}
         currentRoom={currentRoom}
       />
-
+      
+      {/* Profile Edit Modal */}
       {showProfileEdit && (
-        <ProfileEdit onClose={() => setShowProfileEdit(false)} />
+        <ProfileEdit
+          user={user}
+          onClose={() => setShowProfileEdit(false)}
+          onSave={(updatedUser) => {
+            // Handle profile update
+            setShowProfileEdit(false);
+          }}
+        />
       )}
     </div>
   );

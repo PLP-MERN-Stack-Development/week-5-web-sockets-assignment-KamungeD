@@ -1,16 +1,56 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { SocketProvider } from './socket/socket';
+import { SocketProvider } from './socket/socket.jsx';
 import LoginForm from './components/Auth/LoginForm';
 import RegisterForm from './components/Auth/RegisterForm';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
 import ChatPage from './pages/ChatPage';
-import ProfilePage from './components/Profile/ProfilePage';
-import HomePage from './pages/HomePage';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
+
+// Authentication Page Component
+function AuthPage() {
+  const [isLogin, setIsLogin] = useState(true);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="max-w-md w-full space-y-8">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            {isLogin ? 'Sign in to your account' : 'Create new account'}
+          </h2>
+          <p className="mt-2 text-center text-sm text-gray-600">
+            {isLogin ? (
+              <>
+                Or{' '}
+                <button
+                  onClick={() => setIsLogin(false)}
+                  className="font-medium text-blue-600 hover:text-blue-500"
+                >
+                  create a new account
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{' '}
+                <button
+                  onClick={() => setIsLogin(true)}
+                  className="font-medium text-blue-600 hover:text-blue-500"
+                >
+                  Sign in
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+        
+        {isLogin ? <LoginForm /> : <RegisterForm />}
+      </div>
+    </div>
+  );
+}
 
 function AppContent() {
   const { user, isLoading, logout } = useAuth();

@@ -34,7 +34,14 @@ const MessageSearch = ({
         clearTimeout(searchTimeoutRef.current);
       }
     };
-  }, [searchTerm, messages]);
+  }, [searchTerm]); // Removed messages from dependency array
+
+  // Re-run search when messages change if there's an active search
+  useEffect(() => {
+    if (searchTerm.trim() && showResults) {
+      performSearch(searchTerm);
+    }
+  }, [messages]);
 
   const performSearch = async (term) => {
     if (!term.trim()) return;
