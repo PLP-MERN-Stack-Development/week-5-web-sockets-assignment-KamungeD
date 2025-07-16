@@ -5,11 +5,14 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const path = require('path');
 const connectDB = require('./config/database');
 const userService = require('./services/userService');
 const messageService = require('./services/messageService');
 const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const authRoutes = require('./routes/auth');
+const { authenticateSocket } = require('./middleware/auth');
 
 // Load environment variables
 dotenv.config();
@@ -33,6 +36,47 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Ensure uploads directory exists
+const uploadDir = 'uploads/';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    // Generate unique filename with timestamp
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const extension = path.extname(file.originalname);
+    const basename = path.basename(file.originalname, extension);
+    cb(null, `${basename}-${uniqueSuffix}${extension}`);
+  }
+});
+
+// File filter for security
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|mp3|mp4|wav/;
+  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+  const mimetype = allowedTypes.test(file.mimetype);
+  
+  if (mimetype && extname) {
+    return cb(null, true);
+  } else {
+    cb(new Error('Only images, documents, and audio files are allowed!'));
+  }
+};
+
+const upload = multer({ 
+  storage: storage,
+  limits: { 
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: fileFilter
+});
+
 // File upload handler
 const handleFileUpload = async (fileData) => {
   // Implement actual file upload logic
@@ -40,18 +84,33 @@ const handleFileUpload = async (fileData) => {
   return `/uploads/${fileData.filename}`;
 };
 
-const upload = multer({ dest: 'uploads/' });
+// File upload endpoint
 app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
 
-  const fileUrl = `/uploads/${req.file.filename}`;
-  res.json({ 
-    filename: req.file.originalname, 
-    url: fileUrl 
-  });
+    console.log('File uploaded:', req.file);
+
+    // Return file information
+    const fileInfo = {
+      fileUrl: `/uploads/${req.file.filename}`,
+      fileName: req.file.originalname,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+      uploadedAt: new Date()
+    };
+
+    res.json(fileInfo);
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ error: 'File upload failed' });
+  }
 });
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // In-memory storage for active typing users (can remain in memory)
 const typingUsers = {};
@@ -60,8 +119,24 @@ const typingUsers = {};
 const rooms = new Map();
 
 // Socket.io connection handler
-io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+io.use(authenticateSocket);
+
+io.on('connection', async (socket) => {
+  console.log('User connected:', socket.user.username);
+  
+  try {
+    await userService.createOrUpdateUser(socket.user, socket.id);
+    const onlineUsers = await userService.getOnlineUsers();
+    io.emit('user_list', onlineUsers);
+    
+    socket.broadcast.emit('user_joined', {
+      id: socket.user._id,
+      username: socket.user.username,
+      displayName: socket.user.getDisplayName()
+    });
+  } catch (error) {
+    console.error('Error handling user connection:', error);
+  }
 
   // Handle user joining
   socket.on('user_join', async (username) => {
@@ -82,60 +157,66 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle room joining
-  socket.on('join_room', async (roomName) => {
+  // Join a specific chat room
+  socket.on('join_room', async (roomId) => {
     try {
-      const user = await userService.getUserBySocketId(socket.id);
-      if (!user) return;
-
-      // Leave current room
-      const currentRoom = Array.from(socket.rooms).find(room => room !== socket.id);
-      if (currentRoom) {
-        socket.leave(currentRoom);
-      }
-
-      // Join new room
-      socket.join(roomName);
+      console.log(`User attempting to join room: ${roomId}`);
       
-      // Add room to rooms map
-      if (!rooms.has(roomName)) {
-        rooms.set(roomName, new Set());
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) {
+        console.log('User not found when joining room');
+        return;
       }
-      rooms.get(roomName).add(user._id);
 
-      // Notify room about new user
-      socket.to(roomName).emit('user_joined_room', {
-        username: user.username,
-        room: roomName
+      // Leave all previous rooms except the socket.id room
+      Array.from(socket.rooms).forEach(room => {
+        if (room !== socket.id) {
+          socket.leave(room);
+          console.log(`User left room: ${room}`);
+        }
       });
 
-      // Send room message history
-      const roomMessages = await messageService.getMessagesByRoom(roomName);
+      // Join the new room
+      socket.join(roomId);
+      console.log(`${user.username} joined room: ${roomId}`);
+      
+      // Notify other users in the room
+      socket.to(roomId).emit('user_joined_room', {
+        username: user.username,
+        userId: user._id,
+        roomId: roomId,
+        timestamp: new Date()
+      });
+
+      // Send room message history to the user
+      const roomMessages = await messageService.getMessagesByRoom(roomId);
       socket.emit('room_messages', roomMessages);
+
+      // Send current room users list
+      const roomUsers = await userService.getRoomUsers(roomId);
+      socket.emit('room_users', roomUsers);
 
     } catch (error) {
       console.error('Error joining room:', error);
+      socket.emit('error', { message: 'Failed to join room' });
     }
   });
 
-  // Handle room leaving
-  socket.on('leave_room', async (roomName) => {
+  // Leave a chat room
+  socket.on('leave_room', async (roomId) => {
     try {
       const user = await userService.getUserBySocketId(socket.id);
       if (!user) return;
 
-      socket.leave(roomName);
+      socket.leave(roomId);
+      console.log(`${user.username} left room: ${roomId}`);
       
-      if (rooms.has(roomName)) {
-        rooms.get(roomName).delete(user._id);
-        if (rooms.get(roomName).size === 0) {
-          rooms.delete(roomName);
-        }
-      }
-
-      socket.to(roomName).emit('user_left_room', {
+      // Notify other users in the room
+      socket.to(roomId).emit('user_left_room', {
         username: user.username,
-        room: roomName
+        userId: user._id,
+        roomId: roomId,
+        timestamp: new Date()
       });
 
     } catch (error) {
@@ -277,6 +358,338 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Private message event
+  socket.on('private_message', async ({ recipientId, content }) => {
+    const sender = await userService.getUserBySocketId(socket.id);
+    if (!sender) return;
+
+    // Save message to DB
+    const message = await messageService.createMessage({
+      sender: sender._id,
+      senderName: sender.username,
+      recipient: recipientId,
+      isPrivate: true,
+      content,
+      messageType: 'text'
+    });
+
+    // Emit to recipient and sender
+    io.to(socket.id).emit('receive_private_message', message);
+    const recipientSocketId = await userService.getSocketIdByUserId(recipientId);
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit('receive_private_message', message);
+    }
+  });
+
+  // Private messaging - allows users to send direct messages to each other
+  socket.on('send_private_message', async (data) => {
+    try {
+      console.log('Private message received:', data);
+      
+      // Get the sender's information from the database
+      const sender = await userService.getUserBySocketId(socket.id);
+      if (!sender) {
+        console.log('Sender not found');
+        return;
+      }
+
+      // Create and save the private message to the database
+      const message = await messageService.createMessage({
+        sender: sender._id,
+        senderName: sender.username,
+        content: data.content,
+        recipient: data.recipientId,
+        isPrivate: true,
+        messageType: 'text'
+      });
+
+      // Format the message for real-time transmission
+      const messageData = {
+        id: message._id,
+        sender: message.senderName,
+        senderId: message.sender,
+        content: message.content,
+        timestamp: message.createdAt,
+        isPrivate: true,
+        recipient: message.recipient
+      };
+
+      // Send message to the sender (confirmation)
+      socket.emit('receive_private_message', messageData);
+      
+      // Send message to the recipient if they're online
+      const recipient = await userService.getUserById(data.recipientId);
+      if (recipient && recipient.socketId) {
+        socket.to(recipient.socketId).emit('receive_private_message', messageData);
+      }
+
+    } catch (error) {
+      console.error('Error sending private message:', error);
+      socket.emit('error', { message: 'Failed to send private message' });
+    }
+  });
+
+  // Get private message history between two users
+  socket.on('get_private_messages', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      const messages = await messageService.getPrivateMessages(user._id, data.recipientId);
+      socket.emit('private_messages_history', messages);
+    } catch (error) {
+      console.error('Error getting private messages:', error);
+    }
+  });
+
+  // Enhanced typing indicator for rooms
+  socket.on('typing_in_room', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      console.log(`${user.username} is typing in room: ${data.roomId}`);
+      
+      // Broadcast to other users in the room (excluding sender)
+      socket.to(data.roomId).emit('user_typing_in_room', {
+        username: user.username,
+        userId: user._id,
+        roomId: data.roomId
+      });
+    } catch (error) {
+      console.error('Error handling typing in room:', error);
+    }
+  });
+
+  // Stop typing in room
+  socket.on('stop_typing_in_room', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      console.log(`${user.username} stopped typing in room: ${data.roomId}`);
+      
+      // Broadcast to other users in the room
+      socket.to(data.roomId).emit('user_stopped_typing_in_room', {
+        username: user.username,
+        userId: user._id,
+        roomId: data.roomId
+      });
+    } catch (error) {
+      console.error('Error handling stop typing in room:', error);
+    }
+  });
+
+  // Typing indicator for private messages
+  socket.on('typing_private', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      // Send typing indicator to the specific recipient
+      const recipient = await userService.getUserById(data.recipientId);
+      if (recipient && recipient.socketId) {
+        socket.to(recipient.socketId).emit('user_typing_private', {
+          username: user.username,
+          userId: user._id,
+          senderId: user._id
+        });
+      }
+    } catch (error) {
+      console.error('Error handling private typing:', error);
+    }
+  });
+
+  // Stop typing for private messages
+  socket.on('stop_typing_private', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      const recipient = await userService.getUserById(data.recipientId);
+      if (recipient && recipient.socketId) {
+        socket.to(recipient.socketId).emit('user_stopped_typing_private', {
+          username: user.username,
+          userId: user._id,
+          senderId: user._id
+        });
+      }
+    } catch (error) {
+      console.error('Error handling stop private typing:', error);
+    }
+  });
+
+  // Add reaction to a message
+  socket.on('add_reaction', async (data) => {
+    try {
+      console.log('Adding reaction:', data);
+      
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      // Add reaction to the message
+      const message = await messageService.addReaction(data.messageId, data.reaction);
+      if (!message) {
+        socket.emit('error', { message: 'Message not found' });
+        return;
+      }
+
+      // Prepare reaction update data
+      const reactionData = {
+        messageId: data.messageId,
+        reactions: message.reactions,
+        updatedBy: user.username
+      };
+
+      // Broadcast reaction update based on message type
+      if (message.isPrivate) {
+        // For private messages, send to both sender and recipient
+        socket.emit('reaction_updated', reactionData);
+        
+        const recipient = await userService.getUserById(message.recipient);
+        if (recipient && recipient.socketId) {
+          socket.to(recipient.socketId).emit('reaction_updated', reactionData);
+        }
+      } else {
+        // For room messages, broadcast to all users in the room
+        const roomId = message.room?.toString() || 'general';
+        io.to(roomId).emit('reaction_updated', reactionData);
+      }
+
+    } catch (error) {
+      console.error('Error adding reaction:', error);
+      socket.emit('error', { message: 'Failed to add reaction' });
+    }
+  });
+
+  // Remove reaction from a message
+  socket.on('remove_reaction', async (data) => {
+    try {
+      console.log('Removing reaction:', data);
+      
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      // Remove reaction from the message
+      const message = await messageService.removeReaction(data.messageId, data.reaction);
+      if (!message) {
+        socket.emit('error', { message: 'Message not found' });
+        return;
+      }
+
+      // Prepare reaction update data
+      const reactionData = {
+        messageId: data.messageId,
+        reactions: message.reactions,
+        updatedBy: user.username
+      };
+
+      // Broadcast reaction update
+      if (message.isPrivate) {
+        socket.emit('reaction_updated', reactionData);
+        
+        const recipient = await userService.getUserById(message.recipient);
+        if (recipient && recipient.socketId) {
+          socket.to(recipient.socketId).emit('reaction_updated', reactionData);
+        }
+      } else {
+        const roomId = message.room?.toString() || 'general';
+        io.to(roomId).emit('reaction_updated', reactionData);
+      }
+
+    } catch (error) {
+      console.error('Error removing reaction:', error);
+      socket.emit('error', { message: 'Failed to remove reaction' });
+    }
+  });
+
+  // Mark message as read
+  socket.on('mark_message_read', async (data) => {
+    try {
+      console.log('Marking message as read:', data);
+      
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      // Mark the message as read
+      const message = await messageService.markAsRead(data.messageId, user._id);
+      if (!message) {
+        socket.emit('error', { message: 'Message not found' });
+        return;
+      }
+
+      // Prepare read receipt data
+      const readReceiptData = {
+        messageId: data.messageId,
+        readBy: message.readBy,
+        readByUser: {
+          id: user._id,
+          username: user.username,
+          readAt: new Date()
+        }
+      };
+
+      // Send read receipt notification
+      if (message.isPrivate) {
+        // For private messages, notify the sender
+        const sender = await userService.getUserById(message.sender);
+        if (sender && sender.socketId && sender._id.toString() !== user._id.toString()) {
+          socket.to(sender.socketId).emit('message_read_receipt', readReceiptData);
+        }
+      } else {
+        // For room messages, broadcast to all users in the room
+        const roomId = message.room?.toString() || 'general';
+        socket.to(roomId).emit('message_read_receipt', readReceiptData);
+      }
+
+    } catch (error) {
+      console.error('Error marking message as read:', error);
+      socket.emit('error', { message: 'Failed to mark message as read' });
+    }
+  });
+
+  // Mark multiple messages as read (for bulk operations)
+  socket.on('mark_messages_read', async (data) => {
+    try {
+      const user = await userService.getUserBySocketId(socket.id);
+      if (!user) return;
+
+      const results = await Promise.all(
+        data.messageIds.map(messageId => 
+          messageService.markAsRead(messageId, user._id)
+        )
+      );
+
+      // Send bulk read receipt updates
+      results.forEach(message => {
+        if (message) {
+          const readReceiptData = {
+            messageId: message._id,
+            readBy: message.readBy,
+            readByUser: {
+              id: user._id,
+              username: user.username,
+              readAt: new Date()
+            }
+          };
+
+          if (message.isPrivate) {
+            const sender = userService.getUserById(message.sender);
+            if (sender && sender.socketId && sender._id.toString() !== user._id.toString()) {
+              socket.to(sender.socketId).emit('message_read_receipt', readReceiptData);
+            }
+          } else {
+            const roomId = message.room?.toString() || 'general';
+            socket.to(roomId).emit('message_read_receipt', readReceiptData);
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+    }
+  });
+
   // Handle disconnection
   socket.on('disconnect', async () => {
     try {
@@ -301,6 +714,8 @@ io.on('connection', (socket) => {
 });
 
 // API routes
+app.use('/api/auth', authRoutes);
+
 app.get('/api/messages', async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;

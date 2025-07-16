@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import FileUpload from './FileUpload';
 
 const MessageInput = ({ onSendMessage, onTyping, onFileUpload }) => {
   const [message, setMessage] = useState('');
@@ -7,7 +8,7 @@ const MessageInput = ({ onSendMessage, onTyping, onFileUpload }) => {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (message.trim()) {
-      onSendMessage(message);
+      onSendMessage({ content: message, type: 'text' });
       setMessage('');
       onTyping(false);
     }
@@ -18,11 +19,20 @@ const MessageInput = ({ onSendMessage, onTyping, onFileUpload }) => {
     onTyping(e.target.value.length > 0);
   };
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setIsUploading(true);
-      await onFileUpload(file);
+  const handleFileUpload = async (fileData) => {
+    setIsUploading(true);
+    try {
+      // Send file message
+      await onSendMessage({
+        content: fileData.fileName,
+        type: 'file',
+        fileUrl: fileData.fileUrl,
+        fileType: fileData.fileType,
+        fileName: fileData.fileName
+      });
+    } catch (error) {
+      console.error('Error sending file:', error);
+    } finally {
       setIsUploading(false);
     }
   };
@@ -30,19 +40,10 @@ const MessageInput = ({ onSendMessage, onTyping, onFileUpload }) => {
   return (
     <form onSubmit={handleSubmit} className="p-4 border-t bg-white">
       <div className="flex items-center space-x-2">
-        <input
-          type="file"
-          id="file-upload"
-          className="hidden"
-          onChange={handleFileUpload}
-          accept="image/*,.pdf,.doc,.docx"
+        <FileUpload 
+          onFileUpload={handleFileUpload}
+          disabled={isUploading}
         />
-        <label
-          htmlFor="file-upload"
-          className="cursor-pointer bg-gray-200 hover:bg-gray-300 p-2 rounded"
-        >
-          📎
-        </label>
         
         <input
           type="text"

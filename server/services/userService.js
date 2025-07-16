@@ -1,27 +1,15 @@
 const User = require('../models/User');
 
 class UserService {
-  async createOrUpdateUser(username, socketId) {
+  async createOrUpdateUser(user, socketId) {
     try {
-      let user = await User.findOne({ username });
-      
-      if (user) {
-        user.isOnline = true;
-        user.socketId = socketId;
-        user.lastSeen = new Date();
-        await user.save();
-      } else {
-        user = new User({
-          username,
-          socketId,
-          isOnline: true
-        });
-        await user.save();
-      }
-      
+      user.isOnline = true;
+      user.socketId = socketId;
+      user.lastSeen = new Date();
+      await user.save();
       return user;
     } catch (error) {
-      throw new Error('Error creating/updating user: ' + error.message);
+      throw new Error('Error updating user: ' + error.message);
     }
   }
 
@@ -31,7 +19,7 @@ class UserService {
       if (user) {
         user.isOnline = false;
         user.lastSeen = new Date();
-        user.socketId = '';
+        user.socketId = null;
         await user.save();
         return user;
       }
@@ -43,7 +31,9 @@ class UserService {
 
   async getOnlineUsers() {
     try {
-      return await User.find({ isOnline: true }).select('username avatar');
+      return await User.find({ isOnline: true })
+        .select('username firstName lastName avatar isOnline lastSeen')
+        .lean();
     } catch (error) {
       throw new Error('Error getting online users: ' + error.message);
     }
@@ -54,6 +44,23 @@ class UserService {
       return await User.findOne({ socketId });
     } catch (error) {
       throw new Error('Error getting user by socket ID: ' + error.message);
+    }
+  }
+
+  async getUserById(userId) {
+    try {
+      return await User.findById(userId);
+    } catch (error) {
+      throw new Error('Error getting user by ID: ' + error.message);
+    }
+  }
+
+  async getUserChatProfile(userId) {
+    try {
+      const user = await User.findById(userId);
+      return user ? user.getChatProfile() : null;
+    } catch (error) {
+      throw new Error('Error getting user chat profile: ' + error.message);
     }
   }
 }

@@ -1,58 +1,63 @@
-
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { useSocket } from './socket/socket';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { SocketProvider } from './socket/socket';
 import LoginForm from './components/Auth/LoginForm';
+import RegisterForm from './components/Auth/RegisterForm';
+import ProtectedRoute from './components/Auth/ProtectedRoute';
 import ChatPage from './pages/ChatPage';
+import ProfilePage from './components/Profile/ProfilePage';
+import HomePage from './pages/HomePage';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-// Lazy load or import these pages as you create them
-import HomePage from './pages/HomePage';
-import ProfilePage from './pages/ProfilePage';
-import SettingsPage from './pages/SettingsPage';
-import AboutPage from './pages/AboutPage';
-import NotFoundPage from './pages/NotFoundPage';
+import './App.css';
 
+function AppContent() {
+  const { user, isLoading, logout } = useAuth();
 
-function App() {
-  const [username, setUsername] = useState('');
-  const [joined, setJoined] = useState(false);
-  const socket = useSocket();
-
-  const handleLogin = (usernameInput) => {
-    setUsername(usernameInput);
-    socket.connect(usernameInput);
-    setJoined(true);
-  };
-
-  const handleDisconnect = () => {
-    socket.disconnect();
-    setJoined(false);
-    setUsername('');
-  };
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    // <div className="App">
-    //   {!joined ? (
-    //     <LoginForm onLogin={handleLogin} />
-    //   ) : (
-    //     <ChatPage username={username} onDisconnect={handleDisconnect} />
-    //   )}
-    //   <ToastContainer position="top-right" />
-    // </div>
-        <Router>
+    <SocketProvider user={user}>
       <div className="App">
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/login" element={<LoginForm onLogin={handleLogin} />} />
-          <Route path="/chat" element={joined ? <ChatPage username={username} onDisconnect={handleDisconnect} /> : <Navigate to="/login" />} />
-          <Route path="/profile" element={joined ? <ProfilePage username={username} /> : <Navigate to="/login" />} />
-          <Route path="/settings" element={joined ? <SettingsPage /> : <Navigate to="/login" />} />
-          <Route path="/about" element={<AboutPage />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
-        <ToastContainer position="top-right" />
+        {user ? (
+          <ProtectedRoute>
+            <ChatPage user={user} onLogout={logout} />
+          </ProtectedRoute>
+        ) : (
+          <AuthPage />
+        )}
+        <ToastContainer 
+          position="top-right"
+          autoClose={3000}
+          hideProgressBar={false}
+          newestOnTop={false}
+          closeOnClick
+          rtl={false}
+          pauseOnFocusLoss
+          draggable
+          pauseOnHover
+        />
       </div>
+    </SocketProvider>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </Router>
   );
 }
